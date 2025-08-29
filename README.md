@@ -113,10 +113,6 @@ The application supports robot definition files in XML format:
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
 ## Acknowledgments
 
 - RoKiSim for providing the robot simulation environment
