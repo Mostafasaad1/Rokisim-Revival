@@ -1,0 +1,23 @@
+pytest>=7.0.0              # Testing framework
+pytest-cov>=4.0.0           # Coverage reporting
+black>=22.0.0               # Code formatting
+flake8>=5.0.0               # Code linting
+mypy>=0.990                 # Type checking
+pre-commit>=2.20.0          # Pre-commit hooks
+
+# Documentation
+sphinx>=5.0.0               # Documentation generator
+sphinx-rtd-theme>=1.0.0     # Read the docs theme
+
+# Packaging and Distribution
+setuptools>=65.0.0          # Package building
+wheel>=0.38.0               # Wheel building
+twine>=4.0.0                # Package uploading
+
+# Performance Testing (Optional)
+timeit>=1.0.0               # Performance benchmarking
+memory-profiler>=0.60.0     # Memory usage profiling
+
+# Example Dependencies (if extending)
+numpy>=1.21.0              # Numerical operations (optional)
+matplotlib>=3.5.0           # Visualization (optional)
