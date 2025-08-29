@@ -308,7 +308,7 @@ class JointControlGUI(QWidget):
         joint_layout.addWidget(joint_control_group)
 
         # FK Display (disabled until robot is loaded)
-        fk_group = QGroupBox("Forward Kinematics")
+        self.fk_group = QGroupBox("Forward Kinematics")
         fk_layout = QHBoxLayout()
         self.fk_labels = []
         coords = ["X (mm):", "Y (mm):", "Z (mm):", "Roll (deg):", "Pitch (deg):", "Yaw (deg):"]
@@ -321,12 +321,12 @@ class JointControlGUI(QWidget):
             col_layout.addWidget(value_label)
             self.fk_labels.append(value_label)
             fk_layout.addLayout(col_layout)
-        fk_group.setLayout(fk_layout)
-        fk_group.setEnabled(False)  # Disabled until robot loaded
-        joint_layout.addWidget(fk_group)
+        self.fk_group.setLayout(fk_layout)
+        self.fk_group.setEnabled(False)  # Disabled until robot loaded
+        joint_layout.addWidget(self.fk_group)
 
         # IK Input (disabled until robot is loaded)
-        ik_group = QGroupBox("Inverse Kinematics")
+        self.ik_group = QGroupBox("Inverse Kinematics")
         ik_layout = QHBoxLayout()
         self.ik_entries = []
         ik_coords = ["X:", "Y:", "Z:", "R:", "P:", "Y:"]
@@ -342,17 +342,17 @@ class JointControlGUI(QWidget):
             col_layout.addWidget(entry)
             ik_layout.addLayout(col_layout)
 
-        ik_button = QPushButton("Move to Pose (IK)")
-        ik_button.clicked.connect(self._on_calculate_ik)
-        ik_button.setEnabled(False)  # Disabled until robot loaded
-        ik_layout.addWidget(ik_button)
+        self.ik_button = QPushButton("Move to Pose (IK)")
+        self.ik_button.clicked.connect(self._on_calculate_ik)
+        self.ik_button.setEnabled(False)  # Disabled until robot loaded
+        ik_layout.addWidget(self.ik_button)
 
         self.ik_status_label = QLabel("")
         ik_layout.addWidget(self.ik_status_label)
 
-        ik_group.setLayout(ik_layout)
-        ik_group.setEnabled(False)  # Disabled until robot loaded
-        joint_layout.addWidget(ik_group)
+        self.ik_group.setLayout(ik_layout)
+        self.ik_group.setEnabled(False)  # Disabled until robot loaded
+        joint_layout.addWidget(self.ik_group)
 
         # Add joint control tab
         self.tab_widget.addTab(joint_tab, "Joint Control")
@@ -518,23 +518,35 @@ class JointControlGUI(QWidget):
         self.start_worker_thread()
 
     def _clear_ui(self):
-        """Clear the current UI"""
+        """Clear the current UI - FIXED: Properly remove all joint controls"""
         # Clear all references to old widgets
         self.sliders = []
         self.joint_spinboxes = []
         self.joint_speed_gauges = []
-        self.fk_labels = []
-        self.ik_entries = []
-        self.ik_status_label = QLabel("")
+        
+        # Remove all items from the joint layout
+        while self.joint_layout.count():
+            child = self.joint_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+            elif child.layout():
+                # Recursively delete layout items
+                self._clear_layout(child.layout())
+                
         # Reset last joint angles
         self.last_joint_angles = [0.0] * max(20, self.NUM_JOINTS)
 
+    def _clear_layout(self, layout):
+        """Helper method to recursively clear a layout"""
+        while layout.count():
+            child = layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+            elif child.layout():
+                self._clear_layout(child.layout())
+
     def _build_robot_ui(self):
         """Build the UI for the loaded robot"""
-        # Remove the "no robot" label
-        if hasattr(self, 'no_robot_label') and self.no_robot_label:
-            self.no_robot_label.setParent(None)
-            
         # Add joint controls
         if self.NUM_JOINTS > 0:
             for i in range(self.NUM_JOINTS):
@@ -591,11 +603,22 @@ class JointControlGUI(QWidget):
             
         # Enable UI elements
         self.global_speed_slider.setEnabled(True)
+        
+        # Enable FK display
+        self.fk_group.setEnabled(True)
         for label in self.fk_labels:
             label.setStyleSheet("")  # Remove gray styling
+            label.setText("0.00")    # Initialize with default values
+            
+        # Enable IK entries and button
+        self.ik_group.setEnabled(True)
         for entry in self.ik_entries:
             entry.setEnabled(True)
-        self.ik_status_label.setParent(None)  # Remove the old status label
+            entry.setText("")  # Clear any previous values
+        self.ik_button.setEnabled(True)
+        
+        # Clear status label
+        self.ik_status_label.setText("")
 
     def start_worker_thread(self):
         if self.NUM_JOINTS > 0:
@@ -814,7 +837,7 @@ class JointControlGUI(QWidget):
             if self.program_running:
                 self.program_status_label.setText("Program completed successfully")
                 self.program_status_label.setStyleSheet("color: green")
-                
+                    
         except Exception as e:
             self.program_status_label.setText(f"Program execution error: {str(e)}")
             self.program_status_label.setStyleSheet("color: red")
