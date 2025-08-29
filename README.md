@@ -42,7 +42,7 @@ pip install -r requirements.txt
 
 ## Usage
 
-1. Start the RoKiSim simulator
+1. Start the [RoKiSim simulator](https://www.parallemic.org/RoKiSim.html)
 2. Launch the application:
 ```bash
 python joint_control_gui.py
