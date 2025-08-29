@@ -6,6 +6,9 @@ A comprehensive PySide6-based GUI application for controlling industrial robots 
 ![GUI](https://img.shields.io/badge/GUI-PySide6-green)
 ![Robotics](https://img.shields.io/badge/Robotics-Kinematics-orange)
 
+
+![myfile](./1.gif)
+
 ## Features
 
 - **Real-time Joint Control**: Smooth interpolation between joint positions with adjustable speed control
@@ -16,6 +19,8 @@ A comprehensive PySide6-based GUI application for controlling industrial robots 
 - **Visual Feedback**: Speed gauges for each joint and real-time FK display
 - **XML Robot Definitions**: Load custom robot definitions with DH parameters and joint limits
 - **Cross-Platform**: Works on Windows, macOS, and Linux
+
+![myfile](./2.gif)
 
 ## Installation
 
