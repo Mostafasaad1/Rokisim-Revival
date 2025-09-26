@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rokisim-revival"
+version = "0.1.0"
+description = "A revival of the RoKiSim robot simulation interface with enhanced features"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"},
+]
+readme = "README.md"
+license = {file = "LICENSE"}
+keywords = ["robotics", "simulation", "kinematics", "gui"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.21.0",
+    "pybotics>=0.7.0",
+    "lxml>=4.9.0",
+    "PySide6>=6.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=22.0.0",
+    "flake8>=5.0.0",
+    "mypy>=0.990",
+    "sphinx>=5.0.0",
+    "sphinx-rtd-theme>=1.0.0",
+]
+test = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/rokisim-revival"
+Repository = "https://github.com/yourusername/rokisim-revival"
+"Bug Reports" = "https://github.com/yourusername/rokisim-revival/issues"
+
+[project.scripts]
+rokisim-revival = "rokisim_revival.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["rokisim_revival*"]
+
+[tool.setuptools.package-data]
+rokisim_revival = ["*.xml", "*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "src"]  # Add both current directory and src
+addopts = [
+    "--verbose",
+    "--cov=rokisim_revival",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = ["E203", "W503"]
+exclude = [".git", "__pycache__", "build", "dist", "docs"]

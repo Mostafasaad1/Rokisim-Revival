@@ -2,7 +2,7 @@ from typing import Dict, List
 
 import numpy as np
 import pytest
-from rokisim_revival.kinematics import (create_robot_from_dh,
+from src.rokisim_revival.kinematics import (create_robot_from_dh,
                                         forward_kinematics, inverse_kinematics)
 
 

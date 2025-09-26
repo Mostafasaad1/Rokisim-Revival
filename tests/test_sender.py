@@ -3,8 +3,8 @@ import tempfile
 from typing import List
 
 import pytest
-from rokisim_revival.sender import RobotDefinition, RoKiSimSender
-from rokisim_revival.xml_parser import XMLRobotParser
+from src.rokisim_revival.sender import RobotDefinition, RoKiSimSender
+from src.rokisim_revival.xml_parser import XMLRobotParser
 
 
 @pytest.fixture

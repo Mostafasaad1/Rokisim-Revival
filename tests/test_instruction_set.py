@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from rokisim_revival.instruction_set import InstructionSetCompiler
+from src.rokisim_revival.instruction_set import InstructionSetCompiler
 
 
 def test_compile_simple_program():

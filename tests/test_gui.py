@@ -1,7 +1,7 @@
 import pytest
 from PySide6.QtWidgets import QApplication
-from rokisim_revival.gui import JointControlGUI
-from rokisim_revival.sender import RoKiSimSender
+from src.rokisim_revival.gui import JointControlGUI
+from src.rokisim_revival.sender import RobotDefinition, RoKiSimSender
 
 
 @pytest.fixture(scope="module")

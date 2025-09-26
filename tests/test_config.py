@@ -3,7 +3,7 @@ import os
 import tempfile
 
 import pytest
-from rokisim_revival.config import Config
+from src.rokisim_revival.config import Config
 
 
 def test_config_defaults():
