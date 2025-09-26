@@ -1,0 +1,3 @@
+# Sample RoKiSim robot program
+MOVEJ [0,0,0,0,0,0]
+MOVEL [100,200,300,0,90,0]
