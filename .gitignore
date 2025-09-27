@@ -20,10 +20,15 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.coverage
+*htmlcov/
 
 # Virtual environment
 venv/
 env/
+
+# Test
+*.pytest_cache/
 
 # IDE files
 .vscode/

@@ -39,11 +39,23 @@ def inverse_kinematics(
     target_position = target_pose[:3]
     target_rpy_deg = target_pose[3:]
     roll, pitch, yaw = np.radians(target_rpy_deg)
-    Rx = np.array([[1, 0, 0], [0, np.cos(roll), -1*np.sin(roll)], [0, np.sin(roll), np.cos(roll)]])
-    Ry = np.array(
-        [[np.cos(pitch), 0, np.sin(pitch)], [0, 1, 0], [-np.sin(pitch), 0, np.cos(pitch)]]
+    Rx = np.array(
+        [
+            [1, 0, 0],
+            [0, np.cos(roll), -1 * np.sin(roll)],
+            [0, np.sin(roll), np.cos(roll)],
+        ]
     )
-    Rz = np.array([[np.cos(yaw), -1*np.sin(yaw), 0], [np.sin(yaw), np.cos(yaw), 0], [0, 0, 1]])
+    Ry = np.array(
+        [
+            [np.cos(pitch), 0, np.sin(pitch)],
+            [0, 1, 0],
+            [-np.sin(pitch), 0, np.cos(pitch)],
+        ]
+    )
+    Rz = np.array(
+        [[np.cos(yaw), -1 * np.sin(yaw), 0], [np.sin(yaw), np.cos(yaw), 0], [0, 0, 1]]
+    )
     target_orientation = Rz @ Ry @ Rx
     target_transform = np.eye(4)
     target_transform[:3, :3] = target_orientation

@@ -8,11 +8,26 @@ from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QObject, QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QDoubleValidator, QFont, QPainter, QPen
-from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
-                               QFrame, QGroupBox, QHBoxLayout, QLabel,
-                               QLineEdit, QMessageBox, QPlainTextEdit,
-                               QPushButton, QScrollArea, QSlider, QTabWidget,
-                               QTextEdit, QVBoxLayout, QWidget, QGridLayout)
+from PySide6.QtWidgets import (
+    QApplication,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSlider,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+    QGridLayout,
+)
 
 from .instruction_set import InstructionSetCompiler
 from .sender import RoKiSimSender
