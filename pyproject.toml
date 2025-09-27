@@ -50,9 +50,9 @@ test = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/rokisim-revival"
-Repository = "https://github.com/yourusername/rokisim-revival"
-"Bug Reports" = "https://github.com/yourusername/rokisim-revival/issues"
+Homepage = "https://github.com/Mostafasaad1/rokisim-revival"
+Repository = "https://github.com/Mostafasaad1/rokisim-revival"
+"Bug Reports" = "https://github.com/Mostafasaad1/rokisim-revival/issues"
 
 [project.scripts]
 rokisim-revival = "rokisim_revival.gui:main"

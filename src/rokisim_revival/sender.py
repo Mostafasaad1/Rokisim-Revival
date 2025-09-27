@@ -1,4 +1,4 @@
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from .xml_parser import XMLRobotParser
 from .kinematics import create_robot_from_dh, forward_kinematics, inverse_kinematics
 import socket

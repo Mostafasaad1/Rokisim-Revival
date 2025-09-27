@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
                                QFrame, QGroupBox, QHBoxLayout, QLabel,
                                QLineEdit, QMessageBox, QPlainTextEdit,
                                QPushButton, QScrollArea, QSlider, QTabWidget,
-                               QTextEdit, QVBoxLayout, QWidget)
+                               QTextEdit, QVBoxLayout, QWidget, QGridLayout)
 
 from .instruction_set import InstructionSetCompiler
 from .sender import RoKiSimSender

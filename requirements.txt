@@ -4,6 +4,7 @@ black>=22.0.0               # Code formatting
 flake8>=5.0.0               # Code linting
 mypy>=0.990                 # Type checking
 pre-commit>=2.20.0          # Pre-commit hooks
+pybotics>=3.1.2
 
 # Documentation
 sphinx>=5.0.0               # Documentation generator
