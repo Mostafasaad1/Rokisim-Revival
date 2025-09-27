@@ -1,5 +1,3 @@
-# [file name]: test_sender.py
-# [file content begin]
 import os
 import tempfile
 from typing import List
@@ -91,6 +89,8 @@ def test_calculate_ik(sample_xml_file):
     # Use FK to get a pose, then IK back
     angles: List[float] = [0.0] * 6
     pos, rpy = sender.calculate_fk(angles)
+    if pos is None or rpy is None:
+        raise ValueError("FK calculation failed")
     target_pose = pos + rpy
     solution = sender.calculate_ik(target_pose, initial_guess=angles)
     assert solution is not None

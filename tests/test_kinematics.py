@@ -1,5 +1,3 @@
-# [file name]: test_kinematics.py
-# [file content begin]
 from typing import Dict, List
 
 import numpy as np
