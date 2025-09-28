@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 from .instruction_set import InstructionSetCompiler
 from .sender import RoKiSimSender
 
-from qfluentwidgets import setTheme, Theme, PushButton, PrimaryPushButton, Slider, PlainTextEdit, LineEdit, DoubleSpinBox, SmoothScrollArea, BodyLabel, InfoBar, InfoBarPosition, Pivot, isDarkTheme, FluentWindow, FluentIcon, CardWidget
+from qfluentwidgets import setTheme, Theme, PushButton, PrimaryPushButton, Slider, PlainTextEdit, LineEdit, DoubleSpinBox, SmoothScrollArea, BodyLabel, InfoBar, InfoBarPosition, Pivot, isDarkTheme, FluentWindow, FluentIcon, CardWidget, TitleLabel, CaptionLabel
 
 
 class FocusAwareDoubleSpinBox(DoubleSpinBox):
@@ -243,51 +243,61 @@ class JointControlGUI(FluentWindow):
 
     def _setup_joint_tab(self) -> None:
         layout = self.joint_layout
+        layout.addWidget(TitleLabel("Robot Controller"))
         self.load_button = PrimaryPushButton(FluentIcon.FOLDER, "Load Robot XML")
         self.load_button.clicked.connect(self.load_robot_xml)
         layout.addWidget(self.load_button)
-        self.joint_controls_card = CardWidget()
-        self.joint_controls_layout = QVBoxLayout(self.joint_controls_card)
-        scroll = SmoothScrollArea()
-        scroll.setWidget(self.joint_controls_card)
-        scroll.setWidgetResizable(True)
-        layout.addWidget(scroll)
+        layout.addWidget(CaptionLabel("Global Speed Control"))
         self.speed_factor_slider = Slider(Qt.Horizontal)
         self.speed_factor_slider.setRange(1, 20)
         self.speed_factor_slider.setValue(10)
         self.speed_factor_slider.valueChanged.connect(self.update_global_speed)
         layout.addWidget(BodyLabel("Speed Factor (0.1x - 2.0x)"))
         layout.addWidget(self.speed_factor_slider)
+        layout.addWidget(CaptionLabel("Joint Controls"))
+        self.joint_controls_card = CardWidget()
+        self.joint_controls_layout = QVBoxLayout(self.joint_controls_card)
+        scroll = SmoothScrollArea()
+        scroll.setWidget(self.joint_controls_card)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll)
+        kinematics_layout = QHBoxLayout()
         fk_card = CardWidget()
+        fk_card.setMinimumWidth(300)
         fk_layout = QGridLayout(fk_card)
+        fk_layout.addWidget(CaptionLabel("Forward Kinematics"), 0, 0, 1, 2)
         self.fk_labels = [BodyLabel() for _ in range(6)]
-        fk_labels_text = [BodyLabel(lbl) for lbl in ["X:", "Y:", "Z:", "Roll:", "Pitch:", "Yaw:"]]
-        for i in range(6):
-            fk_layout.addWidget(fk_labels_text[i], i, 0)
-            fk_layout.addWidget(self.fk_labels[i], i, 1)
-        layout.addWidget(fk_card)
+        labels = ["X:", "Y:", "Z:", "Roll:", "Pitch:", "Yaw:"]
+        for i, label_text in enumerate(labels):
+            fk_layout.addWidget(BodyLabel(label_text), i+1, 0)
+            fk_layout.addWidget(self.fk_labels[i], i+1, 1)
+        kinematics_layout.addWidget(fk_card)
         ik_card = CardWidget()
+        ik_card.setMinimumWidth(300)
         ik_layout = QGridLayout(ik_card)
+        ik_layout.addWidget(CaptionLabel("Inverse Kinematics"), 0, 0, 1, 2)
         self.ik_entries = [LineEdit() for _ in range(6)]
-        ik_labels_text = [BodyLabel(lbl) for lbl in ["X:", "Y:", "Z:", "Roll:", "Pitch:", "Yaw:"]]
         for i, entry in enumerate(self.ik_entries):
-            ik_layout.addWidget(ik_labels_text[i], i, 0)
-            ik_layout.addWidget(entry, i, 1)
+            ik_layout.addWidget(BodyLabel(labels[i]), i+1, 0)
+            ik_layout.addWidget(entry, i+1, 1)
             entry.setValidator(QDoubleValidator())
         self.ik_button = PushButton(FluentIcon.MOVE, "Move to Pose (IK)")
         self.ik_button.clicked.connect(self.move_to_ik_pose)
-        ik_layout.addWidget(self.ik_button, 6, 0, 1, 2)
+        ik_layout.addWidget(self.ik_button, 7, 0, 1, 2)
         self.ik_status_label = BodyLabel("")
-        ik_layout.addWidget(self.ik_status_label, 7, 0, 1, 2)
-        layout.addWidget(ik_card)
+        ik_layout.addWidget(self.ik_status_label, 8, 0, 1, 2)
+        kinematics_layout.addWidget(ik_card)
+        layout.addLayout(kinematics_layout)
+        layout.addStretch()
 
     def _setup_program_tab(self) -> None:
         layout = self.program_layout
+        layout.addWidget(TitleLabel("Program Editor"))
+        layout.addWidget(BodyLabel("Write and execute robot programs"))
         self.program_editor = PlainTextEdit()
-        layout.addWidget(BodyLabel("Program Editor"))
         layout.addWidget(self.program_editor)
         buttons_layout = QHBoxLayout()
-        self.compile_button = PushButton(FluentIcon.COMMAND_PROMPT, "Compile")
+        self.compile_button = PushButton(FluentIcon.CODE, "Compile")
         self.compile_button.clicked.connect(self.compile_program)
         buttons_layout.addWidget(self.compile_button)
         self.run_button = PrimaryPushButton(FluentIcon.PLAY, "Run")
@@ -298,12 +308,13 @@ class JointControlGUI(FluentWindow):
         self.stop_button.clicked.connect(self.stop_program)
         self.stop_button.setEnabled(False)
         buttons_layout.addWidget(self.stop_button)
+        buttons_layout.addStretch()
         layout.addLayout(buttons_layout)
         self.program_status_label = BodyLabel("")
         layout.addWidget(self.program_status_label)
+        layout.addWidget(CaptionLabel("Compilation Output"))
         self.output_display = PlainTextEdit()
         self.output_display.setReadOnly(True)
-        layout.addWidget(BodyLabel("Output"))
         layout.addWidget(self.output_display)
 
     def update_global_speed(self, value: int) -> None:
@@ -361,7 +372,8 @@ class JointControlGUI(FluentWindow):
         min_angles, max_angles = self.sender.robot_definition.get_joint_limits()
         
         for i in range(num_joints):
-            joint_layout = QHBoxLayout()
+            joint_card = CardWidget()
+            joint_layout = QHBoxLayout(joint_card)
             label = BodyLabel(f"Joint {i+1} [{min_angles[i]:.1f} to {max_angles[i]:.1f}]")
             joint_layout.addWidget(label)
             
@@ -403,7 +415,7 @@ class JointControlGUI(FluentWindow):
             self.gauges.append(gauge)
             joint_layout.addWidget(gauge)
             
-            self.joint_controls_layout.addLayout(joint_layout)
+            self.joint_controls_layout.addWidget(joint_card)
 
     def on_slider_pressed(self, index: int) -> None:
         """Handle slider press - mark joint as being edited by user"""
