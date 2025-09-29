@@ -1,6 +1,6 @@
-from src.rokisim_revival.plugin import Plugin
+# plugins/greet_plugin.py
+from plugin import Plugin
 
-print("test")
 class GreetPlugin(Plugin):
     name = "Greet"
     description = "Returns a greeting message."

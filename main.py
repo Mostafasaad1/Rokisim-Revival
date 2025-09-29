@@ -1,11 +1,16 @@
-# [file name]: main.py
-# [file content begin]
 import sys
 import logging
 from PySide6.QtWidgets import QApplication  # Add this import
 from src.rokisim_revival.gui import JointControlGUI
 from src.rokisim_revival.sender import RoKiSimSender
 from src.rokisim_revival.config import Config
+from pathlib import Path
+
+
+# Add src to Python path so 'rokisim_revival' is importable
+SRC_PATH = Path(__file__).parent / "src"
+sys.path.insert(0, str(SRC_PATH))
+
 
 if __name__ == "__main__":
     logging.basicConfig(

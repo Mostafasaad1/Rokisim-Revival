@@ -1,17 +1,20 @@
-# plugin_manager.py
+# src/rokisim_revival/plugin_manager.py
 import importlib.util
-import os
-import sys
 import logging
+import sys
 import traceback
-from typing import Dict, Optional, Any, List
 from pathlib import Path
 from multiprocessing import Process, Queue
+from typing import Dict, Optional, Any, List
+
 from .plugin import Plugin
 
 logger = logging.getLogger(__name__)
-PLUGIN_DIR = Path("plugins").resolve()
-print(PLUGIN_DIR)
+
+# Resolve absolute paths relative to project root
+PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()  # Go up: plugin_manager.py → rokisim_revival → src → project root
+PLUGINS_DIR = PROJECT_ROOT / "plugins"
+
 class PluginManager:
     _instance = None
 
@@ -30,9 +33,9 @@ class PluginManager:
         self.load_plugins()
 
     def discover_plugin_files(self) -> List[Path]:
-        if not PLUGIN_DIR.exists():
-            PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
-        return [f for f in PLUGIN_DIR.glob("*.py") if f.name != "__init__.py"]
+        if not PLUGINS_DIR.exists():
+            PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
+        return [f for f in PLUGINS_DIR.glob("*.py") if f.name != "__init__.py"]
 
     def load_plugins(self) -> None:
         for plugin_file in self.discover_plugin_files():
@@ -41,10 +44,18 @@ class PluginManager:
                 spec = importlib.util.spec_from_file_location(module_name, plugin_file)
                 if spec is None or spec.loader is None:
                     continue
+
+                # Load the plugin module
                 module = importlib.util.module_from_spec(spec)
                 sys.modules[module_name] = module
+
+                # Inject the base Plugin class so `from plugin import Plugin` works
+                # We do this by making the absolute Plugin class available under the name "plugin"
+                module.__dict__["plugin"] = sys.modules[__name__.rsplit('.', 1)[0] + ".plugin"]
+
                 spec.loader.exec_module(module)
 
+                # Find Plugin subclasses
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
                     if (
@@ -58,8 +69,11 @@ class PluginManager:
                             continue
                         self.plugins[plugin_instance.name] = plugin_instance
                         logger.info(f"Loaded plugin: {plugin_instance.name}")
+                        break
+
             except Exception as e:
                 logger.error(f"Failed to load plugin from {plugin_file}: {e}")
+                traceback.print_exc()
 
     def list_plugins(self) -> Dict[str, Dict]:
         return {
