@@ -524,9 +524,8 @@ class SpeedGauge(QWidget):
                 label_rect = QRect(label_x - 10, label_y - 8, 20, 16)
                 painter.drawText(label_rect, Qt.AlignCenter, str(value))
 
-
 class Worker(QObject):
-    """Highly optimized worker with efficient update logic"""
+    """Optimized worker with controlled sending behavior"""
     
     update_signal = Signal(list)
     fk_update_signal = Signal(tuple, tuple)
@@ -546,25 +545,53 @@ class Worker(QObject):
         self.last_sent_angles: List[float] = [0.0] * num_joints
         self.previous_angles: List[float] = [0.0] * num_joints
         
+        # Control flags
+        self.should_send_commands = False  # Only send when explicitly enabled
+        self.movement_in_progress = False  # Track if we're actively moving
+        
         # Configuration
         self.global_speed_factor = 1.0
         self.last_update_time = time.time()
         self.last_fk_calculation = 0
         self.last_speed_calculation = 0
-        self.fk_calculation_interval = 0.2  # Reduce FK calculation frequency
+        self.fk_calculation_interval = 0.2
         self.speed_calculation_interval = Config.WORKER_UPDATE_INTERVAL
 
+    def enable_sending(self, enable: bool) -> None:
+        """Enable or disable command sending"""
+        self._mutex.lock()
+        try:
+            self.should_send_commands = enable
+            if not enable:
+                # Reset sent angles when disabling to force resend on re-enable
+                self.last_sent_angles = [0.0] * self.num_joints
+        finally:
+            self._mutex.unlock()
+
     def update_target_angle(self, index: int, value: float) -> None:
-        """Thread-safe target angle update"""
+        """Thread-safe target angle update - automatically enables sending"""
         self._mutex.lock()
         try:
             self.target_angles[index] = value
+            self.should_send_commands = True
+            self.movement_in_progress = True
+        finally:
+            self._mutex.unlock()
+
+    def set_all_target_angles(self, angles: List[float]) -> None:
+        """Set all target angles at once - automatically enables sending"""
+        self._mutex.lock()
+        try:
+            if len(angles) == self.num_joints:
+                self.target_angles = angles.copy()
+                self.should_send_commands = True
+                self.movement_in_progress = True
         finally:
             self._mutex.unlock()
 
     def set_global_speed_factor(self, factor: float) -> None:
         """Set global speed factor"""
-        self.global_speed_factor = max(0.1, min(2.0, factor))  # Clamp to reasonable range
+        self.global_speed_factor = max(0.1, min(2.0, factor))
 
     def _interpolate_angle(self, current: float, target: float, max_speed: float, dt: float) -> float:
         """Optimized angle interpolation"""
@@ -577,7 +604,7 @@ class Worker(QObject):
         return current + math.copysign(max_step, delta)
 
     def run(self) -> None:
-        """Main worker loop with optimized timing"""
+        """Main worker loop with controlled sending"""
         last_loop_time = time.time()
         
         while self.running:
@@ -590,8 +617,10 @@ class Worker(QObject):
                 # Store previous angles for speed calculation
                 self.previous_angles = self.joint_angles.copy()
                 
-                # Interpolate angles with change detection
-                has_significant_change = False
+                # Interpolate angles
+                has_angle_changed = False
+                all_targets_reached = True
+                
                 for i in range(self.num_joints):
                     new_angle = self._interpolate_angle(
                         self.joint_angles[i],
@@ -600,23 +629,39 @@ class Worker(QObject):
                         dt,
                     )
                     
-                    # Only update if change is significant
+                    # Check if angle changed
                     if abs(new_angle - self.joint_angles[i]) > 0.001:
                         self.joint_angles[i] = new_angle
-                        if abs(new_angle - self.last_sent_angles[i]) > Config.SEND_THRESHOLD:
-                            has_significant_change = True
+                        has_angle_changed = True
+                    
+                    # Check if we've reached target for this joint
+                    if abs(new_angle - self.target_angles[i]) > 0.01:
+                        all_targets_reached = False
                 
-                # Send angles if significant change and enough time passed
-                if has_significant_change and current_time - self.last_update_time >= Config.MIN_UPDATE_INTERVAL:
-                    try:
-                        self.sender.send_angles(self.joint_angles)
-                        self.last_sent_angles = self.joint_angles.copy()
-                        self.last_update_time = current_time
-                        self.update_signal.emit(self.joint_angles.copy())
-                    except Exception as e:
-                        logging.error(f"Error sending angles: {e}")
+                # Update movement state and auto-disable sending if completed
+                if all_targets_reached and self.movement_in_progress:
+                    self.movement_in_progress = False
+                    self.should_send_commands = False
                 
-                # Calculate FK less frequently to save CPU
+                # Send angles only when explicitly enabled and there are changes
+                if (self.should_send_commands and has_angle_changed and 
+                    current_time - self.last_update_time >= Config.MIN_UPDATE_INTERVAL):
+                    
+                    has_significant_change = any(
+                        abs(self.joint_angles[i] - self.last_sent_angles[i]) > Config.SEND_THRESHOLD
+                        for i in range(self.num_joints)
+                    )
+                    
+                    if has_significant_change:
+                        try:
+                            self.sender.send_angles(self.joint_angles)
+                            self.last_sent_angles = self.joint_angles.copy()
+                            self.last_update_time = current_time
+                            self.update_signal.emit(self.joint_angles.copy())
+                        except Exception as e:
+                            logging.error(f"Error sending angles: {e}")
+                
+                # Calculate FK less frequently
                 if current_time - self.last_fk_calculation >= self.fk_calculation_interval:
                     pos, rpy = self.sender.calculate_fk(self.joint_angles)
                     if pos and rpy:
@@ -636,7 +681,7 @@ class Worker(QObject):
             finally:
                 self._mutex.unlock()
             
-            # Adaptive sleep to maintain timing
+            # Adaptive sleep
             elapsed = time.time() - current_time
             sleep_time = max(0, Config.WORKER_UPDATE_INTERVAL - elapsed)
             if sleep_time > 0:
@@ -646,7 +691,6 @@ class Worker(QObject):
         """Stop worker and cleanup"""
         self.running = False
         self.speed_update_signal.emit([0.0] * self.num_joints)
-
 
 class JointControlGUI(FluentWindow):
     """Optimized main GUI class with efficient resource management"""
@@ -1544,13 +1588,95 @@ class JointControlGUI(FluentWindow):
             
     # ==================== JOINT CONTROL METHODS ====================
 
+    def _reset_all(self) -> None:
+        """Reset all states and UI elements for safe reloading"""
+        # Stop program if running
+        if self.program_running:
+            self.stop_program()
+
+        # Stop worker if exists
+        if self.worker:
+            self.worker.stop()
+            if self.worker_thread and self.worker_thread.is_alive():
+                self.worker_thread.join(timeout=1.0)
+            self.worker = None
+            self.worker_thread = None
+
+        # Clear UI lists
+        self.sliders.clear()
+        self.spin_boxes.clear()
+        self.gauges.clear()
+        self.joint_edit_flags.clear()
+        self.slider_update_timers.clear()
+
+        # Clear joint controls layout
+        if hasattr(self, 'joint_controls_layout'):
+            for i in reversed(range(self.joint_controls_layout.count())):
+                widget = self.joint_controls_layout.itemAt(i).widget()
+                if widget:
+                    widget.deleteLater()
+
+        # Reset flags
+        self.user_interaction_active = False
+        self.reset_in_progress = False
+
+        # Clear joystick combo
+        if hasattr(self, 'joystick_joint_combo'):
+            self.joystick_joint_combo.clear()
+            self.joystick_joint_combo.currentIndexChanged.disconnect()
+
+        # Reset program states
+        self.compiled_program = None
+        self.program_running = False
+        if self.program_thread and self.program_thread.is_alive():
+            self.program_thread.join(timeout=1.0)
+        self.program_thread = None
+        if hasattr(self, 'program_editor'):
+            self.program_editor.clear()
+        if hasattr(self, 'output_display'):
+            self.output_display.clear()
+        if hasattr(self, 'program_status_label'):
+            self.program_status_label.setText("")
+        if hasattr(self, 'run_button'):
+            self.run_button.setEnabled(False)
+        if hasattr(self, 'stop_button'):
+            self.stop_button.setEnabled(False)
+
+        # Reset IK/FK displays
+        for label in self.fk_labels:
+            label.setText("0.00")
+        for entry in self.ik_entries:
+            entry.clear()
+        if hasattr(self, 'ik_status_label'):
+            self.ik_status_label.setText("")
+
+        # Reset joystick states
+        self.joystick_target_joint = 0
+        self.joystick_mode = "joint"
+        if hasattr(self, 'mode_combo'):
+            self.mode_combo.setCurrentIndex(0)
+        self._update_mode_visibility()
+
+        # Reset speed factor
+        if hasattr(self, 'speed_factor_slider'):
+            self.speed_factor_slider.setValue(10)
+        if hasattr(self, 'speed_factor_label'):
+            self.speed_factor_label.setText("1.0x")
+
+        # Clear any other dynamic elements if needed
+        # e.g., plugins can be refreshed
+        self._refresh_plugins()
+
     def load_robot_xml(self) -> None:
-        """Load robot definition from XML file"""
+        """Load robot definition from XML file with safe reset"""
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load Robot XML", "", "XML Files (*.xml)"
         )
         if file_path:
             try:
+                # Reset everything before loading new XML
+                self._reset_all()
+
                 self.sender.load_robot_definition(file_path)
                 num_joints = self.sender.robot_definition.get_num_joints()
                 if num_joints == 0:
@@ -1683,9 +1809,11 @@ class JointControlGUI(FluentWindow):
         return info_widget
 
     def on_slider_pressed(self, index: int) -> None:
-        """Handle slider press"""
+        """Handle slider press - enable sending"""
         self.joint_edit_flags[index] = True
         self.user_interaction_active = True
+        if self.worker:
+            self.worker.enable_sending(True)
 
     def on_slider_released(self, index: int) -> None:
         """Handle slider release"""
@@ -1732,11 +1860,12 @@ class JointControlGUI(FluentWindow):
         self.user_interaction_active = any(self.joint_edit_flags)
 
     def update_target_from_spin(self, index: int, value: float) -> None:
-        """Update target angle from spin box"""
+        """Update target angle from spin box - enable sending"""
         if self.joint_edit_flags[index] and self.worker:
+            self.worker.enable_sending(True)
             self.worker.update_target_angle(index, value)
             self.sliders[index].setValue(int(value * 10))
-
+            
     def reset_joint(self, index: int) -> None:
         """Reset joint to zero position"""
         if self.worker:
@@ -1747,9 +1876,13 @@ class JointControlGUI(FluentWindow):
             QTimer.singleShot(100, lambda: setattr(self, 'reset_in_progress', False))
 
     def _start_worker(self, num_joints: int) -> None:
-        """Start worker thread"""
+        """Start worker thread with sending disabled initially"""
         max_speeds = [50.0] * num_joints
         self.worker = Worker(self.sender, num_joints, max_speeds)
+        
+        # Start with sending disabled
+        self.worker.enable_sending(False)
+        
         self.worker.update_signal.connect(self.update_gui_from_worker)
         self.worker.fk_update_signal.connect(self.update_fk_display)
         self.worker.speed_update_signal.connect(self.update_speed_gauges)
@@ -1807,6 +1940,9 @@ class JointControlGUI(FluentWindow):
             )
             
             if ik_solution:
+                if self.worker:
+                    self.worker.enable_sending(True)
+                    self.worker.set_all_target_angles(ik_solution)
                 # Store current edit flags
                 original_flags = self.joint_edit_flags.copy()
                 self.joint_edit_flags = [False] * len(self.joint_edit_flags)
@@ -2054,27 +2190,7 @@ class JointControlGUI(FluentWindow):
 
     def closeEvent(self, event) -> None:
         """Handle application close event"""
-        # Stop program execution
-        if self.program_running:
-            self.stop_program()
-        
-        # Stop worker thread
-        if self.worker:
-            self.worker.stop()
-            for gauge in self.gauges:
-                gauge.reset_speed()
-        
-        # Stop gamepad polling
-        if self.gamepad_manager:
-            self.gamepad_manager.stop_polling()
-        
-        # Clear lists to help garbage collection
-        self.sliders.clear()
-        self.spin_boxes.clear()
-        self.gauges.clear()
-        self.fk_labels.clear()
-        self.ik_entries.clear()
-        
+        self._reset_all()
         super().closeEvent(event)
 
 
