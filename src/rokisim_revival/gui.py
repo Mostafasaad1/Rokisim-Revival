@@ -6,7 +6,7 @@ import threading
 import time
 from typing import List, Optional, Tuple, Dict
 
-from PySide6.QtCore import QObject, QPoint, QRect, Qt, Signal, QTimer, QEasingCurve,QMutex        
+from PySide6.QtCore import QObject, QPoint, QRect, Qt, Signal, QTimer, QEasingCurve, QMutex, QMutexLocker        
 from PySide6.QtGui import QColor, QDoubleValidator, QFont, QPainter, QPen, QLinearGradient, QRadialGradient
 from PySide6.QtWidgets import (
     QApplication, QDoubleSpinBox, QFileDialog, QFrame, QGroupBox, QHBoxLayout,
@@ -112,33 +112,31 @@ class JoystickWidget(QWidget):
     
     joystick_moved = Signal(float, float)
     joystick_released = Signal()
-    
+        
     def __init__(self, parent=None, label=""):
         super().__init__(parent)
         self.setFixedSize(Config.JOYSTICK_SIZE, Config.JOYSTICK_SIZE)
         self.setMinimumSize(150, 150)
-        
         # State variables
         self.grab_center = False
         self.moving_offset = QPoint(0, 0)
         self._x = 0.0
         self._y = 0.0
         self.label = label
-        
         # Cached values for painting
         self._cached_theme = None
         self._cached_colors = None
         self._center_point = QPoint(Config.JOYSTICK_SIZE // 2, Config.JOYSTICK_SIZE // 2)
         self._max_distance = Config.MAX_JOYSTICK_DISTANCE
-        
         # Pre-calculated geometry
         self._outer_radius = self._max_distance + 10
         self._handle_radius = 22
         self._cross_extent = self._max_distance + 5
-        
         self.setMouseTracking(True)
-        self.setAttribute(Qt.WA_OpaquePaintEvent)  # Optimize painting
-    
+        # self.setAttribute(Qt.WA_OpaquePaintEvent)  # Optimize painting
+        self.setAttribute(Qt.WA_TranslucentBackground)  
+        self.setAutoFillBackground(False)         
+        
     def _update_color_cache(self):
         """Update cached colors based on current theme"""
         dark_theme = isDarkTheme()
@@ -158,8 +156,9 @@ class JoystickWidget(QWidget):
         # Draw background circle
         painter.setPen(QPen(colors['border'], 2))
         painter.setBrush(colors['bg'])
-        painter.drawEllipse(self._center_point, self._outer_radius, self._outer_radius)
-        
+        # painter.drawEllipse(self._center_point, self._outer_radius, self._outer_radius)
+        safe_radius = min(self.width(), self.height()) // 2 - 20
+        painter.drawEllipse(self._center_point, safe_radius, safe_radius)
         # Draw crosshair lines
         painter.setPen(QPen(colors['border'], 1))
         center = self._center_point
@@ -367,7 +366,8 @@ class SpeedGauge(QWidget):
         self._precomputed_geometry = None
         
         self.setFixedSize(Config.GAUGE_SIZE, Config.GAUGE_SIZE)
-        self.setAttribute(Qt.WA_OpaquePaintEvent)  # Optimize painting
+        # self.setAttribute(Qt.WA_OpaquePaintEvent)  # Optimize painting
+        self.setAutoFillBackground(False)
 
     def set_speed(self, speed: float) -> None:
         self.target_speed = min(abs(speed), self.max_speed)
@@ -507,9 +507,9 @@ class SpeedGauge(QWidget):
         painter.drawText(unit_rect, Qt.AlignCenter, "°/s")
         
         # Draw joint name
-        painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        name_rect = QRect(center.x() - 50, center.y() - radius + 5, 100, 25)
-        painter.drawText(name_rect, Qt.AlignCenter, self.joint_name)
+        # painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        # name_rect = QRect(center.x() - 50, center.y() - radius + 5, 100, 25)
+        # painter.drawText(name_rect, Qt.AlignCenter, self.joint_name)
         
         # Draw tick marks using precomputed positions
         painter.setPen(QPen(colors['text'], 1))
@@ -705,12 +705,15 @@ class JointControlGUI(FluentWindow):
             
         self.plugins_tab = self._create_plugins_tab()
         self.plugins_tab.setObjectName("plugins_tab")
-    
+           
         # Add to navigation
         self.addSubInterface(self.joint_tab, FluentIcon.ROBOT, 'Joint Control')
         self.addSubInterface(self.joystick_tab, FluentIcon.GAME, 'Joystick Control')
         self.addSubInterface(self.program_tab, FluentIcon.CODE, 'Program Editor')
         self.addSubInterface(self.plugins_tab, FluentIcon.APPLICATION, 'Plugins')
+        
+        # Add plugins
+        self._add_plugin_tabs()
         
         # Set theme
         setTheme(Theme.AUTO)
@@ -723,6 +726,59 @@ class JointControlGUI(FluentWindow):
             self.gamepad_manager.gamepad_disconnected.connect(self._on_gamepad_disconnected)
             self.gamepad_manager.axis_moved.connect(self._on_gamepad_axis_moved)
             self.gamepad_manager.start_polling()
+
+    def _add_plugin_tabs(self):
+        """Dynamically add tabs for plugins that provide UI panels."""
+        ui_plugins = self.plugin_manager.get_ui_plugins()
+        for name, plugin in ui_plugins.items():
+            try:
+                panel = plugin.create_ui_panel(self)
+                if panel:
+                    # Set valid objectName
+                    safe_name = "".join(c if c.isalnum() else "_" for c in name)
+                    panel.setObjectName(f"plugin_tab_{safe_name}")
+
+                    # 🔑 Use plugin's custom icon
+                    icon = plugin.get_icon()
+
+                    self.addSubInterface(
+                        panel,
+                        icon,
+                        plugin.get_ui_panel_title()
+                    )
+                    setattr(self, f"plugin_tab_{safe_name}", panel)
+            except Exception as e:
+                logging.error(f"Failed to create UI for plugin {name}: {e}")
+                InfoBar.error("Plugin Error", f"Failed to load UI for {name}", parent=self)
+    
+    def get_joint_angles(self) -> List[float]:
+        """Safely return a copy of current joint angles."""
+        if not self.worker:
+            return []
+        from PySide6.QtCore import QMutexLocker
+        with QMutexLocker(self.worker._mutex):
+            return self.worker.joint_angles.copy()
+
+    def set_joint_target(self, index: int, angle: float) -> bool:
+        """Safely set target angle for one joint."""
+        if not self.worker or not (0 <= index < self.worker.num_joints):
+            return False
+        self.worker.update_target_angle(index, angle)
+        if not self.joint_edit_flags[index]:
+            self.sliders[index].setValue(int(angle * 10))
+            self.spin_boxes[index].setValue(angle)
+        return True
+
+    def set_all_joint_targets(self, angles: List[float]) -> bool:
+        """Safely set target angles for all joints."""
+        if not self.worker or len(angles) != self.worker.num_joints:
+            return False
+        for i, a in enumerate(angles):
+            self.worker.update_target_angle(i, a)
+            if not self.joint_edit_flags[i]:
+                self.sliders[i].setValue(int(a * 10))
+                self.spin_boxes[i].setValue(a)
+        return True
 
     def _create_joint_tab(self) -> QWidget:
         """Create optimized joint control tab"""
@@ -1468,25 +1524,24 @@ class JointControlGUI(FluentWindow):
             self.plugin_list.addItem(item)
 
     def _execute_selected_plugin(self):
-        """Execute selected plugin with user-provided arguments"""
         current = self.plugin_list.currentItem()
         if not current:
             InfoBar.warning("No Plugin", "Please select a plugin.", parent=self)
             return
-
         plugin_name = current.data(Qt.UserRole)
         args_str = self.args_input.text().strip()
         args = [arg.strip() for arg in args_str.split(",")] if args_str else []
 
         try:
-            result = self.plugin_manager.execute_plugin(plugin_name, *args)
+            # Pass the GUI as 'gui' so plugins can call gui.get_joint_angles(), etc.
+            result = self.plugin_manager.execute_plugin(plugin_name, *args, gui=self)
             self.plugin_output.setPlainText(f"✅ Result:\n{result}")
             InfoBar.success("Success", f"Plugin '{plugin_name}' executed.", parent=self)
         except Exception as e:
             error_msg = f"❌ Error:\n{str(e)}"
             self.plugin_output.setPlainText(error_msg)
             InfoBar.error("Plugin Error", str(e), parent=self)
-
+            
     # ==================== JOINT CONTROL METHODS ====================
 
     def load_robot_xml(self) -> None:
@@ -1824,9 +1879,11 @@ class JointControlGUI(FluentWindow):
             return
         
         try:
+            external_handlers = self.plugin_manager.get_instruction_extensions()
             # Initialize compiler
             self.compiler = InstructionSetCompiler(
-                self.compiler.default_interpolation_steps
+                self.compiler.default_interpolation_steps,
+                external_handlers=external_handlers
             )
             
             # Set current pose

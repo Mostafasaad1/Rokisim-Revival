@@ -1,18 +1,16 @@
-# src/rokisim_revival/plugin_manager.py
 import importlib.util
 import logging
 import sys
 import traceback
 from pathlib import Path
 from multiprocessing import Process, Queue
-from typing import Dict, Optional, Any, List
-
+from typing import Dict, Optional, Any, List, Callable
 from .plugin import Plugin
 
 logger = logging.getLogger(__name__)
 
-# Resolve absolute paths relative to project root
-PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()  # Go up: plugin_manager.py → rokisim_revival → src → project root
+# Resolve project root (where main.py lives)
+PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 PLUGINS_DIR = PROJECT_ROOT / "plugins"
 
 class PluginManager:
@@ -44,18 +42,10 @@ class PluginManager:
                 spec = importlib.util.spec_from_file_location(module_name, plugin_file)
                 if spec is None or spec.loader is None:
                     continue
-
-                # Load the plugin module
                 module = importlib.util.module_from_spec(spec)
                 sys.modules[module_name] = module
-
-                # Inject the base Plugin class so `from plugin import Plugin` works
-                # We do this by making the absolute Plugin class available under the name "plugin"
-                module.__dict__["plugin"] = sys.modules[__name__.rsplit('.', 1)[0] + ".plugin"]
-
                 spec.loader.exec_module(module)
 
-                # Find Plugin subclasses
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
                     if (
@@ -82,6 +72,21 @@ class PluginManager:
             if name not in self.disabled_plugins
         }
 
+    def get_ui_plugins(self) -> Dict[str, Plugin]:
+        """Return plugins that provide UI panels."""
+        return {
+            name: plugin for name, plugin in self.plugins.items()
+            if name not in self.disabled_plugins and plugin.create_ui_panel(None) is not None
+        }
+
+    def get_instruction_extensions(self) -> Dict[str, Callable]:
+        """Aggregate custom instruction handlers from all plugins."""
+        handlers = {}
+        for plugin in self.plugins.values():
+            if plugin.name not in self.disabled_plugins:
+                handlers.update(plugin.register_instructions())
+        return handlers
+
     def enable_plugin(self, name: str) -> bool:
         if name in self.disabled_plugins:
             self.disabled_plugins.remove(name)
@@ -98,6 +103,22 @@ class PluginManager:
         if name in self.disabled_plugins:
             return None
         return self.plugins.get(name)
+
+    def notify_robot_loaded(self, robot_definition) -> None:
+        for plugin in self.plugins.values():
+            if plugin.name not in self.disabled_plugins:
+                try:
+                    plugin.on_robot_loaded(robot_definition)
+                except Exception as e:
+                    logging.error(f"Plugin {plugin.name} failed on_robot_loaded: {e}")
+
+    def notify_program_compiled(self, joint_positions) -> None:
+        for plugin in self.plugins.values():
+            if plugin.name not in self.disabled_plugins:
+                try:
+                    plugin.on_program_compiled(joint_positions)
+                except Exception as e:
+                    logging.error(f"Plugin {plugin.name} failed on_program_compiled: {e}")
 
     def _execute_in_sandbox(self, plugin_name: str, args: tuple, kwargs: dict, result_queue: Queue):
         try:

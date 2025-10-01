@@ -8,7 +8,7 @@ import numpy as np
 class InstructionSetCompiler:
     """Compiles robot programs; modular with handler registry for easy extension."""
 
-    def __init__(self, interpolation_steps: int = 10):
+    def __init__(self, interpolation_steps: int = 10, external_handlers: Dict[str, Callable] = None):
         self.positions: Dict[str, List[float]] = {}
         self.variables: Dict[str, Any] = {}
         self.output: List[List[float]] = []
