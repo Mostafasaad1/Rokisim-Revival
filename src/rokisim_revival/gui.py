@@ -6,7 +6,7 @@ import threading
 import time
 from typing import List, Optional, Tuple, Dict
 
-from PySide6.QtCore import QObject, QPoint, QRect, Qt, Signal, QTimer, QEasingCurve, QMutex, QMutexLocker        
+from PySide6.QtCore import QObject, QPoint, QRect, Qt, Signal, QTimer, QEasingCurve, QMutex, QMutexLocker, QLoggingCategory        
 from PySide6.QtGui import QColor, QDoubleValidator, QFont, QPainter, QPen, QLinearGradient, QRadialGradient
 from PySide6.QtWidgets import (
     QApplication, QDoubleSpinBox, QFileDialog, QFrame, QGroupBox, QHBoxLayout,
@@ -14,6 +14,10 @@ from PySide6.QtWidgets import (
     QSlider, QTabWidget, QTextEdit, QVBoxLayout, QWidget, QGridLayout,
     QGraphicsDropShadowEffect, QSizePolicy
 )
+
+# Suppress deprecation warnings
+import warnings
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
 
 # Import gamepad support if available
 GAMEPAD_AVAILABLE = False
@@ -45,12 +49,14 @@ class Config:
     GAUGE_SIZE = 140
     UPDATE_INTERVAL_MS = 16  # ~60 FPS
     WORKER_UPDATE_INTERVAL = 0.05
+    WORKER_IDLE_INTERVAL = 0.2  # Longer sleep when idle
     MIN_UPDATE_INTERVAL = 0.1
-    SEND_THRESHOLD = 0.1
+    SEND_THRESHOLD = 0.01  # Lowered for better precision
     ANIMATION_DURATION_MS = 250
     PROGRAM_STEP_DELAY = 0.5
     DEAD_ZONE = 0.1
     MAX_JOYSTICK_DISTANCE = 70
+    TARGET_REACHED_EPSILON = 0.001  # Small epsilon for target reached
 
 
 class ColorCache:
@@ -133,7 +139,6 @@ class JoystickWidget(QWidget):
         self._handle_radius = 22
         self._cross_extent = self._max_distance + 5
         self.setMouseTracking(True)
-        # self.setAttribute(Qt.WA_OpaquePaintEvent)  # Optimize painting
         self.setAttribute(Qt.WA_TranslucentBackground)  
         self.setAutoFillBackground(False)         
         
@@ -156,9 +161,9 @@ class JoystickWidget(QWidget):
         # Draw background circle
         painter.setPen(QPen(colors['border'], 2))
         painter.setBrush(colors['bg'])
-        # painter.drawEllipse(self._center_point, self._outer_radius, self._outer_radius)
         safe_radius = min(self.width(), self.height()) // 2 - 20
         painter.drawEllipse(self._center_point, safe_radius, safe_radius)
+        
         # Draw crosshair lines
         painter.setPen(QPen(colors['border'], 1))
         center = self._center_point
@@ -366,7 +371,6 @@ class SpeedGauge(QWidget):
         self._precomputed_geometry = None
         
         self.setFixedSize(Config.GAUGE_SIZE, Config.GAUGE_SIZE)
-        # self.setAttribute(Qt.WA_OpaquePaintEvent)  # Optimize painting
         self.setAutoFillBackground(False)
 
     def set_speed(self, speed: float) -> None:
@@ -506,11 +510,6 @@ class SpeedGauge(QWidget):
         unit_rect = QRect(center.x() - 40, center.y() + 18, 80, 20)
         painter.drawText(unit_rect, Qt.AlignCenter, "°/s")
         
-        # Draw joint name
-        # painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        # name_rect = QRect(center.x() - 50, center.y() - radius + 5, 100, 25)
-        # painter.drawText(name_rect, Qt.AlignCenter, self.joint_name)
-        
         # Draw tick marks using precomputed positions
         painter.setPen(QPen(colors['text'], 1))
         for i, (inner_x, inner_y, outer_x, outer_y) in enumerate(geom['tick_positions']):
@@ -525,7 +524,7 @@ class SpeedGauge(QWidget):
                 painter.drawText(label_rect, Qt.AlignCenter, str(value))
 
 class Worker(QObject):
-    """Optimized worker with controlled sending behavior"""
+    """Highly optimized worker with controlled sending behavior"""
     
     update_signal = Signal(list)
     fk_update_signal = Signal(tuple, tuple)
@@ -594,11 +593,11 @@ class Worker(QObject):
         self.global_speed_factor = max(0.1, min(2.0, factor))
 
     def _interpolate_angle(self, current: float, target: float, max_speed: float, dt: float) -> float:
-        """Optimized angle interpolation"""
+        """Optimized angle interpolation with epsilon snap"""
         delta = target - current
         max_step = max_speed * dt * self.global_speed_factor
         
-        if abs(delta) <= max_step:
+        if abs(delta) <= max_step or abs(delta) < Config.TARGET_REACHED_EPSILON:
             return target
         
         return current + math.copysign(max_step, delta)
@@ -630,24 +629,29 @@ class Worker(QObject):
                     )
                     
                     # Check if angle changed
-                    if abs(new_angle - self.joint_angles[i]) > 0.001:
+                    if abs(new_angle - self.joint_angles[i]) > Config.TARGET_REACHED_EPSILON:
                         self.joint_angles[i] = new_angle
                         has_angle_changed = True
                     
                     # Check if we've reached target for this joint
-                    if abs(new_angle - self.target_angles[i]) > 0.01:
+                    if abs(new_angle - self.target_angles[i]) > Config.TARGET_REACHED_EPSILON:
                         all_targets_reached = False
                 
-                # Update movement state and auto-disable sending if completed
+                # Force snap and send when targets are reached
+                force_send = False
                 if all_targets_reached and self.movement_in_progress:
+                    for i in range(self.num_joints):
+                        self.joint_angles[i] = self.target_angles[i]
                     self.movement_in_progress = False
                     self.should_send_commands = False
+                    force_send = True
+                    has_angle_changed = True  # Ensure update
                 
-                # Send angles only when explicitly enabled and there are changes
-                if (self.should_send_commands and has_angle_changed and 
+                # Send angles only when explicitly enabled and there are changes, or force send
+                if force_send or (self.should_send_commands and has_angle_changed and 
                     current_time - self.last_update_time >= Config.MIN_UPDATE_INTERVAL):
                     
-                    has_significant_change = any(
+                    has_significant_change = force_send or any(
                         abs(self.joint_angles[i] - self.last_sent_angles[i]) > Config.SEND_THRESHOLD
                         for i in range(self.num_joints)
                     )
@@ -678,12 +682,14 @@ class Worker(QObject):
                     self.speed_update_signal.emit(speeds)
                     self.last_speed_calculation = current_time
                     
+                idle = not self.movement_in_progress and not self.should_send_commands
+                
             finally:
                 self._mutex.unlock()
             
-            # Adaptive sleep
+            # Adaptive sleep: longer when idle
             elapsed = time.time() - current_time
-            sleep_time = max(0, Config.WORKER_UPDATE_INTERVAL - elapsed)
+            sleep_time = max(0, (Config.WORKER_IDLE_INTERVAL if idle else Config.WORKER_UPDATE_INTERVAL) - elapsed)
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
@@ -722,6 +728,9 @@ class JointControlGUI(FluentWindow):
         # Gamepad
         self.gamepad_manager = GamepadManager() if GAMEPAD_AVAILABLE else None
         
+        # Plugin manager
+        self.plugin_manager = PluginManager()
+        
         # UI components
         self.sliders: List[Slider] = []
         self.spin_boxes: List[FocusAwareDoubleSpinBox] = []
@@ -737,15 +746,18 @@ class JointControlGUI(FluentWindow):
         self.setWindowTitle("RoKiSim Robot Controller")
         self.resize(1200, 800)
         
+        # Set window properties to handle resizing better
+        self.setMinimumSize(1000, 700)
+        
         # Create tabs
         self.joint_tab = self._create_joint_tab()
-        self.joint_tab.setObjectName("joint_tab")             # <-- ADDED
+        self.joint_tab.setObjectName("joint_tab")
 
         self.program_tab = self._create_program_tab()
-        self.program_tab.setObjectName("program_tab")         # <-- ADDED
+        self.program_tab.setObjectName("program_tab")
 
         self.joystick_tab = self._create_joystick_tab()
-        self.joystick_tab.setObjectName("joystick_tab")       # <-- ADDED
+        self.joystick_tab.setObjectName("joystick_tab")
             
         self.plugins_tab = self._create_plugins_tab()
         self.plugins_tab.setObjectName("plugins_tab")
@@ -782,7 +794,7 @@ class JointControlGUI(FluentWindow):
                     safe_name = "".join(c if c.isalnum() else "_" for c in name)
                     panel.setObjectName(f"plugin_tab_{safe_name}")
 
-                    # 🔑 Use plugin's custom icon
+                    # Use plugin's custom icon
                     icon = plugin.get_icon()
 
                     self.addSubInterface(
@@ -990,32 +1002,72 @@ class JointControlGUI(FluentWindow):
         return card
 
     def _create_joystick_tab(self) -> QWidget:
-        """Create optimized joystick control tab"""
+        """Create optimized joystick control tab with improved layout"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(30, 30, 30, 30)
-        layout.setSpacing(25)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
         
-        # Title
+        # Title with icon - FIXED: Use ToolButton for icon instead of direct iconWidget
+        title_card = CardWidget()
+        title_layout = QHBoxLayout(title_card)
+        title_layout.setContentsMargins(20, 15, 20, 15)
+        
+        # Create icon using ToolButton
+        title_icon_button = ToolButton(FluentIcon.GAME)
+        title_icon_button.setEnabled(False)  # Make it non-clickable
+        title_icon_button.setFixedSize(32, 32)
+        
         title_label = TitleLabel("Dual Joystick Control")
-        title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_label)
+        title_label.setAlignment(Qt.AlignLeft)
         
-        # Control mode selection
-        mode_card = self._create_mode_selection_card()
+        title_layout.addWidget(title_icon_button)
+        title_layout.addSpacing(10)
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+        
+        layout.addWidget(title_card)
+
+        # Mode selection card
+        mode_card = CardWidget()
+        mode_card_layout = QVBoxLayout(mode_card)
+        mode_card_layout.setContentsMargins(20, 15, 20, 15)
+        mode_card_layout.setSpacing(12)
+        
+        mode_title = SubtitleLabel("Control Mode")
+        mode_card_layout.addWidget(mode_title)
+        
+        mode_selector_layout = QHBoxLayout()
+        mode_selector_layout.addWidget(BodyLabel("Select Mode:"))
+        
+        self.mode_combo = ComboBox()
+        self.mode_combo.setFixedWidth(220)
+        self.mode_combo.addItems(["Individual Joint Control", "Cartesian (X-Y-Z) Control"])
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        mode_selector_layout.addWidget(self.mode_combo)
+        
+        mode_selector_layout.addStretch()
+        mode_card_layout.addLayout(mode_selector_layout)
+        
+        # Mode description
+        self.mode_description = BodyLabel("")
+        self.mode_description.setStyleSheet("color: #666666; font-size: 12px; padding: 5px;")
+        self.mode_description.setWordWrap(True)
+        mode_card_layout.addWidget(self.mode_description)
+        
         layout.addWidget(mode_card)
+
+        # Main content area
+        content_card = CardWidget()
+        content_layout = QVBoxLayout(content_card)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
         
-        # Main content
-        main_content = CardWidget()
-        main_layout = QVBoxLayout(main_content)
-        main_layout.setContentsMargins(10, 25, 30, 25)
-        main_layout.setSpacing(30)
-        
-        # Mode stack
+        # Mode stack with improved styling
         self.mode_stack = QWidget()
         self.mode_stack_layout = QVBoxLayout(self.mode_stack)
-        self.mode_stack_layout.setContentsMargins(0, 0, 0, 0)
-        self.mode_stack_layout.setSpacing(20)
+        self.mode_stack_layout.setContentsMargins(25, 25, 25, 25)
+        self.mode_stack_layout.setSpacing(25)
         
         # Create mode widgets
         self.joint_mode_widget = self._create_joint_mode_widget()
@@ -1024,112 +1076,215 @@ class JointControlGUI(FluentWindow):
         self.mode_stack_layout.addWidget(self.joint_mode_widget)
         self.mode_stack_layout.addWidget(self.cartesian_mode_widget)
         
-        main_layout.addWidget(self.mode_stack)
-        layout.addWidget(main_content)
+        content_layout.addWidget(self.mode_stack)
+        layout.addWidget(content_card)
+        
+        # Status card at bottom
+        status_card = CardWidget()
+        status_layout = QHBoxLayout(status_card)
+        status_layout.setContentsMargins(20, 12, 20, 12)
+        
+        self.joystick_status = BodyLabel("🟢 Ready")
+        self.joystick_status.setStyleSheet("font-weight: bold;")
+        status_layout.addWidget(self.joystick_status)
+        
+        status_layout.addStretch()
+        
+        # Gamepad status
+        if GAMEPAD_AVAILABLE:
+            self.gamepad_status = BodyLabel("🎮 Gamepad: Checking...")
+            status_layout.addWidget(self.gamepad_status)
+        else:
+            self.gamepad_status = BodyLabel("🎮 Gamepad support not available")
+            self.gamepad_status.setStyleSheet("color: #888888;")
+            status_layout.addWidget(self.gamepad_status)
+        
+        layout.addWidget(status_card)
         
         # Show initial mode
         self._update_mode_visibility()
+        self._update_mode_description()
         
         return tab
 
-    def _create_mode_selection_card(self) -> CardWidget:
-        """Create mode selection card"""
-        card = CardWidget()
-        layout = QHBoxLayout(card)
-        layout.setContentsMargins(20, 15, 20, 15)
-        layout.setSpacing(20)
-        
-        layout.addWidget(BodyLabel("Control Mode:"))
-        
-        self.mode_combo = ComboBox()
-        self.mode_combo.setFixedWidth(180)
-        self.mode_combo.addItems(["Individual Joint Control", "Cartesian (X-Y-Z) Control"])
-        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        layout.addWidget(self.mode_combo)
-        
-        layout.addStretch()
-        return card
-
     def _create_joint_mode_widget(self) -> QWidget:
-        """Create joint control mode widget"""
+        """Create improved joint control mode widget"""
         widget = QWidget()
         layout = QHBoxLayout(widget)
-        layout.setSpacing(40)
+        layout.setSpacing(30)
         
-        # Virtual joystick
+        # Left side - Virtual joystick with enhanced styling
+        joystick_card = CardWidget()
+        joystick_layout = QVBoxLayout(joystick_card)
+        joystick_layout.setContentsMargins(20, 20, 20, 20)
+        joystick_layout.setSpacing(15)
+        
+        joystick_title = StrongBodyLabel("Joint Control Joystick")
+        joystick_title.setAlignment(Qt.AlignCenter)
+        joystick_layout.addWidget(joystick_title)
+        
         self.joint_joystick = JoystickWidget(label="Joint Control")
         self.joint_joystick.joystick_moved.connect(self._on_joint_joystick_moved)
         self.joint_joystick.joystick_released.connect(self._on_joystick_released)
-        layout.addWidget(self.joint_joystick, alignment=Qt.AlignCenter)
+        joystick_layout.addWidget(self.joint_joystick, alignment=Qt.AlignCenter)
         
-        # Control panel
+        # Joystick instructions
+        instructions = BodyLabel("• Drag the joystick to control joint position\n• Release to stop movement")
+        instructions.setStyleSheet("color: #666666; font-size: 11px;")
+        instructions.setAlignment(Qt.AlignCenter)
+        joystick_layout.addWidget(instructions)
+        
+        layout.addWidget(joystick_card, 2)  # More space for joystick
+
+        # Right side - Control panel with improved layout
         control_panel = self._create_joint_control_panel_joystick()
-        layout.addWidget(control_panel)
+        layout.addWidget(control_panel, 1)
         
         return widget
 
     def _create_joint_control_panel_joystick(self) -> CardWidget:
-        """Create joint control panel for joystick tab"""
+        """Create improved joint control panel for joystick tab"""
         panel = CardWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(20)
         
+        # Title
+        panel_title = SubtitleLabel("Joint Settings")
+        layout.addWidget(panel_title)
+        
         # Joint selection
-        joint_layout = QHBoxLayout()
-        joint_layout.addWidget(BodyLabel("Control Joint:"))
+        joint_group = QGroupBox("Joint Selection")
+        joint_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        joint_layout = QVBoxLayout(joint_group)
+        joint_layout.setContentsMargins(15, 20, 15, 15)
+        joint_layout.setSpacing(10)
+        
+        joint_selector_layout = QHBoxLayout()
+        joint_selector_layout.addWidget(BodyLabel("Control Joint:"))
         self.joystick_joint_combo = ComboBox()
         self.joystick_joint_combo.setFixedWidth(120)
-        joint_layout.addWidget(self.joystick_joint_combo)
-        layout.addLayout(joint_layout)
+        joint_selector_layout.addWidget(self.joystick_joint_combo)
+        joint_selector_layout.addStretch()
+        joint_layout.addLayout(joint_selector_layout)
         
-        # Sensitivity
-        sensitivity_layout = QHBoxLayout()
-        sensitivity_layout.addWidget(BodyLabel("Sensitivity:"))
+        layout.addWidget(joint_group)
+        
+        # Sensitivity control
+        sensitivity_group = QGroupBox("Sensitivity Control")
+        sensitivity_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        sensitivity_layout = QVBoxLayout(sensitivity_group)
+        sensitivity_layout.setContentsMargins(15, 20, 15, 15)
+        sensitivity_layout.setSpacing(15)
+        
+        sensitivity_control_layout = QVBoxLayout()
+        sensitivity_control_layout.setSpacing(8)
+        
+        sensitivity_label_layout = QHBoxLayout()
+        sensitivity_label_layout.addWidget(BodyLabel("Sensitivity:"))
+        self.sensitivity_label = StrongBodyLabel("2.0°")
+        self.sensitivity_label.setFixedWidth(50)
+        self.sensitivity_label.setAlignment(Qt.AlignRight)
+        sensitivity_label_layout.addWidget(self.sensitivity_label)
+        sensitivity_control_layout.addLayout(sensitivity_label_layout)
+        
         self.joystick_sensitivity_slider = Slider(Qt.Horizontal)
-        self.joystick_sensitivity_slider.setFixedWidth(150)
         self.joystick_sensitivity_slider.setRange(1, 10)
         self.joystick_sensitivity_slider.setValue(2)
         self.joystick_sensitivity_slider.valueChanged.connect(self._on_sensitivity_changed)
-        sensitivity_layout.addWidget(self.joystick_sensitivity_slider)
-        self.sensitivity_label = BodyLabel("2.0°")
-        self.sensitivity_label.setFixedWidth(50)
-        sensitivity_layout.addWidget(self.sensitivity_label)
-        layout.addLayout(sensitivity_layout)
+        sensitivity_control_layout.addWidget(self.joystick_sensitivity_slider)
+        
+        sensitivity_labels_layout = QHBoxLayout()
+        
+        # FIXED: Create labels first, then set alignment
+        low_label = BodyLabel("Low")
+        low_label.setAlignment(Qt.AlignLeft)
+        high_label = BodyLabel("High") 
+        high_label.setAlignment(Qt.AlignRight)
+        
+        sensitivity_labels_layout.addWidget(low_label)
+        sensitivity_labels_layout.addStretch()
+        sensitivity_labels_layout.addWidget(high_label)
+        
+        sensitivity_control_layout.addLayout(sensitivity_labels_layout)
+        
+        sensitivity_layout.addLayout(sensitivity_control_layout)
+        layout.addWidget(sensitivity_group)
         
         # Enable toggle
-        self.joystick_toggle = SwitchButton("Enable Joystick")
-        self.joystick_toggle.checkedChanged.connect(self._on_joystick_toggled)
-        layout.addWidget(self.joystick_toggle)
+        toggle_group = QGroupBox("Control State")
+        toggle_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        toggle_layout = QVBoxLayout(toggle_group)
+        toggle_layout.setContentsMargins(15, 20, 15, 15)
+        toggle_layout.setSpacing(15)
         
-        # Gamepad status
-        if GAMEPAD_AVAILABLE:
-            self.gamepad_status = BodyLabel("🎮 Gamepad: Checking...")
-            layout.addWidget(self.gamepad_status)
-        else:
-            self.gamepad_status = BodyLabel("🎮 Gamepad support not available")
-            self.gamepad_status.setStyleSheet("color: #888888;")
-            layout.addWidget(self.gamepad_status)
+        toggle_control_layout = QHBoxLayout()
+        self.joystick_toggle = SwitchButton("Enable Joystick Control")
+        self.joystick_toggle.checkedChanged.connect(self._on_joystick_toggled)
+        toggle_control_layout.addWidget(self.joystick_toggle)
+        toggle_layout.addLayout(toggle_control_layout)
+        
+        # Current joint angle display
+        self.current_joint_display = StrongBodyLabel("Current: 0.0°")
+        self.current_joint_display.setAlignment(Qt.AlignCenter)
+        self.current_joint_display.setStyleSheet("background-color: #f0f0f0; padding: 8px; border-radius: 4px;")
+        if isDarkTheme():
+            self.current_joint_display.setStyleSheet("background-color: #2a2a2a; padding: 8px; border-radius: 4px;")
+        toggle_layout.addWidget(self.current_joint_display)
+        
+        layout.addWidget(toggle_group)
         
         return panel
 
     def _create_cartesian_mode_widget(self) -> QWidget:
-        """Create cartesian control mode widget"""
+        """Create improved cartesian control mode widget"""
         widget = QWidget()
         layout = QHBoxLayout(widget)
-        layout.setSpacing(30)
+        layout.setSpacing(25)
         
-        # Left joystick for X-Y
-        self.xy_joystick = JoystickWidget(label="X-Y Plane")
+        # Left joystick for X-Y with enhanced styling
+        xy_joystick_card = CardWidget()
+        xy_joystick_layout = QVBoxLayout(xy_joystick_card)
+        xy_joystick_layout.setContentsMargins(20, 20, 20, 20)
+        xy_joystick_layout.setSpacing(15)
+        
+        xy_title = StrongBodyLabel("X-Y Plane Control")
+        xy_title.setAlignment(Qt.AlignCenter)
+        xy_joystick_layout.addWidget(xy_title)
+        
+        self.xy_joystick = JoystickWidget(label="X-Y Movement")
         self.xy_joystick.joystick_moved.connect(self._on_xy_joystick_moved)
         self.xy_joystick.joystick_released.connect(self._on_joystick_released)
-        layout.addWidget(self.xy_joystick, alignment=Qt.AlignCenter)
+        xy_joystick_layout.addWidget(self.xy_joystick, alignment=Qt.AlignCenter)
         
-        # Right joystick for Z-Rotation
+        xy_instructions = BodyLabel("• Control X and Y position\n• Left/Right: X-axis\n• Up/Down: Y-axis")
+        xy_instructions.setStyleSheet("color: #666666; font-size: 11px;")
+        xy_instructions.setAlignment(Qt.AlignCenter)
+        xy_joystick_layout.addWidget(xy_instructions)
+        
+        layout.addWidget(xy_joystick_card)
+        
+        # Right joystick for Z-Rotation with enhanced styling
+        z_rot_joystick_card = CardWidget()
+        z_rot_joystick_layout = QVBoxLayout(z_rot_joystick_card)
+        z_rot_joystick_layout.setContentsMargins(20, 20, 20, 20)
+        z_rot_joystick_layout.setSpacing(15)
+        
+        z_rot_title = StrongBodyLabel("Z & Rotation Control")
+        z_rot_title.setAlignment(Qt.AlignCenter)
+        z_rot_joystick_layout.addWidget(z_rot_title)
+        
         self.z_rot_joystick = JoystickWidget(label="Z & Rotation")
         self.z_rot_joystick.joystick_moved.connect(self._on_z_rot_joystick_moved)
         self.z_rot_joystick.joystick_released.connect(self._on_joystick_released)
-        layout.addWidget(self.z_rot_joystick, alignment=Qt.AlignCenter)
+        z_rot_joystick_layout.addWidget(self.z_rot_joystick, alignment=Qt.AlignCenter)
+        
+        z_rot_instructions = BodyLabel("• Control Z height and rotation\n• Left/Right: Z-axis\n• Up/Down: Rotation")
+        z_rot_instructions.setStyleSheet("color: #666666; font-size: 11px;")
+        z_rot_instructions.setAlignment(Qt.AlignCenter)
+        z_rot_joystick_layout.addWidget(z_rot_instructions)
+        
+        layout.addWidget(z_rot_joystick_card)
         
         # Control panel
         control_panel = self._create_cartesian_control_panel()
@@ -1138,65 +1293,166 @@ class JointControlGUI(FluentWindow):
         return widget
 
     def _create_cartesian_control_panel(self) -> CardWidget:
-        """Create cartesian control panel"""
+        """Create improved cartesian control panel"""
         panel = CardWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(20)
         
-        # Sensitivity controls
-        xy_sensitivity_layout = QHBoxLayout()
-        xy_sensitivity_layout.addWidget(BodyLabel("X-Y Sensitivity:"))
+        # Title
+        panel_title = SubtitleLabel("Cartesian Settings")
+        layout.addWidget(panel_title)
+        
+        # Sensitivity controls in groups
+        sensitivity_group = QGroupBox("Movement Sensitivity")
+        sensitivity_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        sensitivity_layout = QVBoxLayout(sensitivity_group)
+        sensitivity_layout.setContentsMargins(15, 20, 15, 15)
+        sensitivity_layout.setSpacing(20)
+        
+        # X-Y Sensitivity
+        xy_sensitivity_layout = QVBoxLayout()
+        xy_sensitivity_layout.setSpacing(8)
+        
+        xy_label_layout = QHBoxLayout()
+        xy_label_layout.addWidget(BodyLabel("X-Y Sensitivity:"))
+        self.xy_sensitivity_label = StrongBodyLabel("10.0")
+        self.xy_sensitivity_label.setFixedWidth(40)
+        self.xy_sensitivity_label.setAlignment(Qt.AlignRight)
+        xy_label_layout.addWidget(self.xy_sensitivity_label)
+        xy_sensitivity_layout.addLayout(xy_label_layout)
+        
         self.xy_sensitivity_slider = Slider(Qt.Horizontal)
-        self.xy_sensitivity_slider.setFixedWidth(120)
         self.xy_sensitivity_slider.setRange(1, 20)
         self.xy_sensitivity_slider.setValue(10)
         self.xy_sensitivity_slider.valueChanged.connect(self._on_xy_sensitivity_changed)
         xy_sensitivity_layout.addWidget(self.xy_sensitivity_slider)
-        self.xy_sensitivity_label = BodyLabel("10.0")
-        self.xy_sensitivity_label.setFixedWidth(40)
-        xy_sensitivity_layout.addWidget(self.xy_sensitivity_label)
-        layout.addLayout(xy_sensitivity_layout)
         
-        z_sensitivity_layout = QHBoxLayout()
-        z_sensitivity_layout.addWidget(BodyLabel("Z Sensitivity:"))
+        xy_labels_layout = QHBoxLayout()
+        
+        # FIXED: Create labels first, then set alignment
+        fine_label_xy = BodyLabel("Fine")
+        fine_label_xy.setAlignment(Qt.AlignLeft)
+        coarse_label_xy = BodyLabel("Coarse")
+        coarse_label_xy.setAlignment(Qt.AlignRight)
+        
+        xy_labels_layout.addWidget(fine_label_xy)
+        xy_labels_layout.addStretch()
+        xy_labels_layout.addWidget(coarse_label_xy)
+        
+        xy_sensitivity_layout.addLayout(xy_labels_layout)
+        
+        sensitivity_layout.addLayout(xy_sensitivity_layout)
+        
+        # Z Sensitivity
+        z_sensitivity_layout = QVBoxLayout()
+        z_sensitivity_layout.setSpacing(8)
+        
+        z_label_layout = QHBoxLayout()
+        z_label_layout.addWidget(BodyLabel("Z Sensitivity:"))
+        self.z_sensitivity_label = StrongBodyLabel("5.0")
+        self.z_sensitivity_label.setFixedWidth(40)
+        self.z_sensitivity_label.setAlignment(Qt.AlignRight)
+        z_label_layout.addWidget(self.z_sensitivity_label)
+        z_sensitivity_layout.addLayout(z_label_layout)
+        
         self.z_sensitivity_slider = Slider(Qt.Horizontal)
-        self.z_sensitivity_slider.setFixedWidth(120)
         self.z_sensitivity_slider.setRange(1, 20)
         self.z_sensitivity_slider.setValue(5)
         self.z_sensitivity_slider.valueChanged.connect(self._on_z_sensitivity_changed)
         z_sensitivity_layout.addWidget(self.z_sensitivity_slider)
-        self.z_sensitivity_label = BodyLabel("5.0")
-        self.z_sensitivity_label.setFixedWidth(40)
-        z_sensitivity_layout.addWidget(self.z_sensitivity_label)
-        layout.addLayout(z_sensitivity_layout)
         
-        rot_sensitivity_layout = QHBoxLayout()
-        rot_sensitivity_layout.addWidget(BodyLabel("Rot Sensitivity:"))
+        z_labels_layout = QHBoxLayout()
+        
+        # FIXED: Create labels first, then set alignment
+        fine_label_z = BodyLabel("Fine")
+        fine_label_z.setAlignment(Qt.AlignLeft)
+        coarse_label_z = BodyLabel("Coarse")
+        coarse_label_z.setAlignment(Qt.AlignRight)
+        
+        z_labels_layout.addWidget(fine_label_z)
+        z_labels_layout.addStretch()
+        z_labels_layout.addWidget(coarse_label_z)
+        
+        z_sensitivity_layout.addLayout(z_labels_layout)
+        
+        sensitivity_layout.addLayout(z_sensitivity_layout)
+        
+        # Rotation Sensitivity
+        rot_sensitivity_layout = QVBoxLayout()
+        rot_sensitivity_layout.setSpacing(8)
+        
+        rot_label_layout = QHBoxLayout()
+        rot_label_layout.addWidget(BodyLabel("Rotation Sensitivity:"))
+        self.rot_sensitivity_label = StrongBodyLabel("2.0")
+        self.rot_sensitivity_label.setFixedWidth(40)
+        self.rot_sensitivity_label.setAlignment(Qt.AlignRight)
+        rot_label_layout.addWidget(self.rot_sensitivity_label)
+        rot_sensitivity_layout.addLayout(rot_label_layout)
+        
         self.rot_sensitivity_slider = Slider(Qt.Horizontal)
-        self.rot_sensitivity_slider.setFixedWidth(120)
         self.rot_sensitivity_slider.setRange(1, 10)
         self.rot_sensitivity_slider.setValue(2)
         self.rot_sensitivity_slider.valueChanged.connect(self._on_rot_sensitivity_changed)
         rot_sensitivity_layout.addWidget(self.rot_sensitivity_slider)
-        self.rot_sensitivity_label = BodyLabel("2.0")
-        self.rot_sensitivity_label.setFixedWidth(40)
-        rot_sensitivity_layout.addWidget(self.rot_sensitivity_label)
-        layout.addLayout(rot_sensitivity_layout)
+        
+        rot_labels_layout = QHBoxLayout()
+        
+        # FIXED: Create labels first, then set alignment
+        fine_label_rot = BodyLabel("Fine")
+        fine_label_rot.setAlignment(Qt.AlignLeft)
+        coarse_label_rot = BodyLabel("Coarse")
+        coarse_label_rot.setAlignment(Qt.AlignRight)
+        
+        rot_labels_layout.addWidget(fine_label_rot)
+        rot_labels_layout.addStretch()
+        rot_labels_layout.addWidget(coarse_label_rot)
+        
+        rot_sensitivity_layout.addLayout(rot_labels_layout)
+        
+        sensitivity_layout.addLayout(rot_sensitivity_layout)
+        
+        layout.addWidget(sensitivity_group)
         
         # Enable toggle
+        toggle_group = QGroupBox("Control State")
+        toggle_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        toggle_layout = QVBoxLayout(toggle_group)
+        toggle_layout.setContentsMargins(15, 20, 15, 15)
+        toggle_layout.setSpacing(15)
+        
+        toggle_control_layout = QHBoxLayout()
         self.cartesian_toggle = SwitchButton("Enable Cartesian Control")
         self.cartesian_toggle.checkedChanged.connect(self._on_cartesian_toggled)
-        layout.addWidget(self.cartesian_toggle)
+        toggle_control_layout.addWidget(self.cartesian_toggle)
+        toggle_layout.addLayout(toggle_control_layout)
+        
+        # Current pose display
+        self.current_pose_display = BodyLabel("X: 0.00  Y: 0.00  Z: 0.00\nR: 0.00  P: 0.00  Y: 0.00")
+        self.current_pose_display.setAlignment(Qt.AlignCenter)
+        self.current_pose_display.setStyleSheet("background-color: #f0f0f0; padding: 8px; border-radius: 4px; font-family: 'Courier New', monospace;")
+        if isDarkTheme():
+            self.current_pose_display.setStyleSheet("background-color: #2a2a2a; padding: 8px; border-radius: 4px; font-family: 'Courier New', monospace;")
+        toggle_layout.addWidget(self.current_pose_display)
+        
+        layout.addWidget(toggle_group)
         
         # Instructions
+        instructions_group = QGroupBox("Control Instructions")
+        instructions_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        instructions_layout = QVBoxLayout(instructions_group)
+        instructions_layout.setContentsMargins(15, 20, 15, 15)
+        
         instructions = BodyLabel(
-            "• Left joystick: Move in X-Y plane\n"
-            "• Right joystick: Control Z height and rotation\n"
-            "• Use gamepad left/right sticks for same control"
+            "• Left Joystick: Move in X-Y plane\n"
+            "• Right Joystick: Control Z height and rotation\n"
+            "• Gamepad: Use left/right sticks for same control\n"
+            "• Release joystick to stop movement"
         )
-        instructions.setStyleSheet("color: #666666; font-size: 12px;")
-        layout.addWidget(instructions)
+        instructions.setStyleSheet("color: #666666; font-size: 11px; line-height: 1.4;")
+        instructions_layout.addWidget(instructions)
+        
+        layout.addWidget(instructions_group)
         
         return panel
 
@@ -1388,15 +1644,33 @@ class JointControlGUI(FluentWindow):
             target_pose = (x, y, z, roll, pitch, yaw)
             self._move_to_cartesian_pose(target_pose)
 
+    def _update_mode_description(self):
+        """Update mode description based on current selection"""
+        mode_index = self.mode_combo.currentIndex()
+        if mode_index == 0:  # Joint mode
+            self.mode_description.setText(
+                "Control individual joints using the virtual joystick. "
+                "Select which joint to control and adjust sensitivity for precise movements."
+            )
+        else:  # Cartesian mode
+            self.mode_description.setText(
+                "Control the robot's end-effector in 3D space. "
+                "Use the left joystick for X-Y movement and right joystick for Z and rotation control."
+            )
+
     def _on_mode_changed(self, index: int):
-        """Handle control mode change"""
+        """Handle control mode change with improved feedback"""
         self._update_mode_visibility()
+        self._update_mode_description()
         
         # Update internal mode
         self.joystick_mode = "joint" if index == 0 else "cartesian"
         
-        # Show notification
+        # Update status
         mode_name = "Joint" if index == 0 else "Cartesian"
+        self.joystick_status.setText(f"🟢 {mode_name} Mode Active")
+        
+        # Show notification
         InfoBar.info(
             title="Mode Changed",
             content=f"Switched to {mode_name} control mode",
@@ -1560,7 +1834,6 @@ class JointControlGUI(FluentWindow):
 
     def _refresh_plugins(self):
         """Refresh plugin list from PluginManager"""
-        self.plugin_manager = PluginManager()
         self.plugin_list.clear()
         for name, meta in self.plugin_manager.list_plugins().items():
             item = QListWidgetItem(f"{name} v{meta['version']} – {meta['description']} (by {meta['author']})")
@@ -1620,10 +1893,18 @@ class JointControlGUI(FluentWindow):
         self.user_interaction_active = False
         self.reset_in_progress = False
 
-        # Clear joystick combo
+        # Clear joystick combo - FIXED: Safe signal disconnection
         if hasattr(self, 'joystick_joint_combo'):
+            # Safe signal disconnection
+            try:
+                # Get all connected signals
+                signal = self.joystick_joint_combo.currentIndexChanged
+                # Disconnect all connections to this signal
+                signal.disconnect()
+            except (RuntimeError, TypeError):
+                # Ignore errors if no connections exist
+                pass
             self.joystick_joint_combo.clear()
-            self.joystick_joint_combo.currentIndexChanged.disconnect()
 
         # Reset program states
         self.compiled_program = None
@@ -1664,7 +1945,6 @@ class JointControlGUI(FluentWindow):
             self.speed_factor_label.setText("1.0x")
 
         # Clear any other dynamic elements if needed
-        # e.g., plugins can be refreshed
         self._refresh_plugins()
 
     def load_robot_xml(self) -> None:
@@ -1685,10 +1965,16 @@ class JointControlGUI(FluentWindow):
                 self._create_joint_controls(num_joints)
                 self._start_worker(num_joints)
                 
-                # Update joystick joint combo
+                # Update joystick joint combo - FIXED: Safe signal connection
                 self.joystick_joint_combo.clear()
                 for i in range(num_joints):
                     self.joystick_joint_combo.addItem(f"Joint {i+1}")
+                
+                # Safe signal connection - disconnect first to avoid duplicates
+                try:
+                    self.joystick_joint_combo.currentIndexChanged.disconnect(self._on_joystick_joint_changed)
+                except (RuntimeError, TypeError):
+                    pass  # No previous connection, ignore
                 self.joystick_joint_combo.currentIndexChanged.connect(self._on_joystick_joint_changed)
                 
                 InfoBar.success(
@@ -1701,6 +1987,7 @@ class JointControlGUI(FluentWindow):
                     parent=self
                 )
             except Exception as e:
+                logging.error(f"Failed to load robot XML: {e}")
                 InfoBar.error(
                     title="Error",
                     content=f"Failed to load XML: {e}",
@@ -1905,6 +2192,21 @@ class JointControlGUI(FluentWindow):
                 
                 self.sliders[i].blockSignals(False)
                 self.spin_boxes[i].blockSignals(False)
+        
+        # Update joystick tab displays
+        if self.joystick_mode == "joint" and hasattr(self, 'joystick_target_joint'):
+            self.update_current_joint_display(self.joystick_target_joint, angles[self.joystick_target_joint])
+
+    def update_current_joint_display(self, index: int, angle: float):
+        """Update the current joint angle display"""
+        if hasattr(self, 'current_joint_display') and self.joystick_mode == "joint":
+            self.current_joint_display.setText(f"Current: {angle:.1f}°")
+
+    def update_current_pose_display(self, pose_data):
+        """Update the current pose display"""
+        if hasattr(self, 'current_pose_display') and self.joystick_mode == "cartesian" and pose_data:
+            x, y, z, r, p, yaw = pose_data
+            self.current_pose_display.setText(f"X: {x:.2f}  Y: {y:.2f}  Z: {z:.2f}\nR: {r:.2f}  P: {p:.2f}  Y: {yaw:.2f}")
 
     def update_speed_gauges(self, speeds: List[float]) -> None:
         """Update speed gauges"""
@@ -1916,6 +2218,10 @@ class JointControlGUI(FluentWindow):
         values = list(pos) + list(rpy)
         for i, label in enumerate(self.fk_labels):
             label.setText(f"{values[i]:.2f}")
+        
+        # Update cartesian mode display
+        if self.joystick_mode == "cartesian":
+            self.update_current_pose_display(values)
 
     def update_global_speed(self, value: int) -> None:
         """Update global speed factor"""
@@ -2189,8 +2495,31 @@ class JointControlGUI(FluentWindow):
         self.program_running = False
 
     def closeEvent(self, event) -> None:
-        """Handle application close event"""
-        self._reset_all()
+        """Handle application close event with proper cleanup"""
+        # Stop gamepad polling
+        if self.gamepad_manager:
+            self.gamepad_manager.stop_polling()
+        
+        # Stop worker thread
+        if self.worker:
+            self.worker.stop()
+            if self.worker_thread and self.worker_thread.is_alive():
+                self.worker_thread.join(timeout=1.0)
+        
+        # Stop program thread
+        if self.program_running:
+            self.program_running = False
+            if self.program_thread and self.program_thread.is_alive():
+                self.program_thread.join(timeout=1.0)
+        
+        # Clean up pygame if used
+        if GAMEPAD_AVAILABLE:
+            try:
+                import pygame
+                pygame.quit()
+            except:
+                pass
+        
         super().closeEvent(event)
 
 
@@ -2199,6 +2528,18 @@ def main() -> None:
     # Enable high DPI scaling
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    
+    # Suppress opacity warnings
+    QLoggingCategory.setFilterRules('qt.qpa.window=false')
+    
+    # Disable pygame audio to avoid ALSA errors
+    os.environ["SDL_AUDIODRIVER"] = "dummy"
+    
+    # Wayland compatibility - try to use X11 if Wayland has issues
+    if "WAYLAND_DISPLAY" in os.environ:
+        # Force X11 if Wayland has issues with window management
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+        logging.info("Wayland detected, forcing X11 for better window management")
     
     app = QApplication(sys.argv)
     setTheme(Theme.AUTO)

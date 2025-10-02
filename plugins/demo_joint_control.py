@@ -12,7 +12,7 @@ class JointControlDemoPlugin(Plugin):
 
     def __init__(self):
         super().__init__()
-        self.panel = None
+        # self.panel = None
 
     def get_icon(self):
         return FluentIcon.ROBOT
@@ -21,10 +21,8 @@ class JointControlDemoPlugin(Plugin):
         return "Joint Control Demo"
 
     def create_ui_panel(self, parent: "JointControlGUI") -> QWidget:
-        """parent is the JointControlGUI instance"""
-        if self.panel is None:
-            self.panel = JointControlDemoWidget(parent)
-        return self.panel
+        # ALWAYS create a fresh widget — no caching!
+        return JointControlDemoWidget(parent)
 
     def execute(self, *args, **kwargs):
         """
@@ -60,11 +58,10 @@ class JointControlDemoPlugin(Plugin):
 
         return f"❌ Unknown command: {cmd}"
 
-
 class JointControlDemoWidget(CardWidget):
     def __init__(self, parent: "JointControlGUI"):
         super().__init__()
-        self.gui = parent
+        self.gui = parent  # ← parent IS the JointControlGUI
         self._setup_ui()
 
     def _setup_ui(self):
@@ -97,12 +94,18 @@ class JointControlDemoWidget(CardWidget):
         layout.addWidget(self.status)
 
     def _read_angles(self):
+        if self.gui is None:
+            self.status.setText("❌ GUI not available")
+            return
         try:
             angles = self.gui.get_joint_angles()
-            self.status.setText(f"Current: {[round(a, 1) for a in angles]}°")
+            if not angles:
+                self.status.setText("⚠️ Load a robot first")
+            else:
+                self.status.setText(f"Current: {[round(a, 1) for a in angles]}°")
         except Exception as e:
             self.status.setText(f"❌ Error: {e}")
-
+            
     def _move_joint_1(self):
         try:
             success = self.gui.set_joint_target(0, 45.0)
